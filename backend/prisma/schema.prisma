@@ -1,0 +1,333 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum GroupMode {
+  COOP_SHARED
+  VERSUS_RACE
+}
+
+enum PaymentProvider {
+  BANK_CARD
+  PAYPAL
+  BINANCE_PAY
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUND
+}
+
+enum LocationType {
+  CRIME_SCENE
+  HOUSE
+  SHOP
+  PUBLIC
+}
+
+enum EvidenceCategory {
+  FORENSICS
+  DOCUMENTS
+  WEAPONS
+  PERSONAL
+  DIGITAL
+}
+
+enum PersonStatus {
+  CITIZEN
+  SUSPECT
+  VICTIM
+  WANTED
+  DECEASED
+  IN_CUSTODY
+}
+
+enum SessionStatus {
+  ACTIVE
+  CLOSED
+}
+
+enum VerdictType {
+  TRUE_KILLER_CONVICTED
+  KILLER_WALKED_WEAK_PROOF
+  ACCOMPLICE_ONLY
+  INNOCENT_WRONGFULLY_CONVICTED
+  INNOCENT_ACQUITTED_IN_COURT
+}
+
+// ==========================================
+// DOMAIN A: PLAYERS & CO-OP
+// ==========================================
+
+model User {
+  id                    String   @id @default(uuid())
+  username              String   @unique
+  email                 String   @unique
+  password_hash         String
+  country               String?  @db.VarChar(2)
+  points                Int      @default(0)
+  cases_purchased_count Int      @default(0)
+  cases_solved_count    Int      @default(0)
+  group_id              String?
+  created_at            DateTime @default(now())
+
+  // Relations
+  group           Group?              @relation("GroupMembers", fields: [group_id], references: [id])
+  led_groups      Group[]             @relation("GroupLeader")
+  orders          Order[]
+  sessions        PlayerCaseSession[]
+}
+
+model Group {
+  id             String    @id @default(uuid())
+  name           String
+  invite_code    String    @unique
+  leader_user_id String
+  mode           GroupMode
+  created_at     DateTime  @default(now())
+
+  // Relations
+  leader   User                @relation("GroupLeader", fields: [leader_user_id], references: [id])
+  members  User[]              @relation("GroupMembers")
+  sessions PlayerCaseSession[]
+}
+
+// ==========================================
+// DOMAIN B: E-COMMERCE / BILLING
+// ==========================================
+
+model Order {
+  id               String           @id @default(uuid())
+  user_id          String
+  payment_provider PaymentProvider?
+  provider_tx_id   String?
+  total_amount     Decimal          @db.Decimal(10, 2)
+  currency         String?          @db.VarChar(10)
+  status           OrderStatus?
+  created_at       DateTime         @default(now())
+  paid_at          DateTime?
+
+  // Relations
+  user  User        @relation(fields: [user_id], references: [id])
+  lines OrderLine[]
+}
+
+model OrderLine {
+  id               String  @id @default(uuid())
+  order_id         String
+  case_id          String
+  unit_price       Decimal @db.Decimal(10, 2)
+  discount_applied Decimal @default(0) @db.Decimal(10, 2)
+
+  // Relations
+  order Order @relation(fields: [order_id], references: [id])
+  case  Case  @relation(fields: [case_id], references: [id])
+}
+
+// ==========================================
+// DOMAIN C: CASE BLUEPRINT & WORLD
+// ==========================================
+
+model Case {
+  id                   String  @id @default(uuid())
+  title                String
+  price                Decimal @db.Decimal(10, 2)
+  difficulty_tier      Int
+  client_name          String?
+  initial_notification String?
+  is_published         Boolean @default(false)
+
+  // Relations
+  locations    Location[]
+  persons      Person[]
+  autopsies    Autopsy[]
+  order_lines  OrderLine[]
+  sessions     PlayerCaseSession[]
+  case_endings CaseEnding[]
+}
+
+model Location {
+  id                    String       @id @default(uuid())
+  case_id               String
+  name                  String
+  exact_address         String
+  normalized_search_key String?
+  map_coords            Json?
+  location_type         LocationType?
+  scene_image_url       String?
+  present_npc_id        String?
+
+  // Relations
+  case        Case       @relation(fields: [case_id], references: [id])
+  present_npc Person?    @relation(fields: [present_npc_id], references: [id])
+  evidences   Evidence[]
+}
+
+model Evidence {
+  id                String            @id @default(uuid())
+  location_id       String
+  name              String
+  category          EvidenceCategory?
+  short_description String?
+  thumbnail_url     String?
+  inspect_image_url String?
+  hotspot_coords    Json?
+  requires_scope    Boolean           @default(false)
+  relevance_score   Int               @default(0)
+
+  // Relations
+  location            Location            @relation(fields: [location_id], references: [id])
+  collected_evidences CollectedEvidence[]
+}
+
+model Person {
+  id                  String        @id @default(uuid())
+  case_id             String
+  
+  // Primary Identification
+  subject_id          String?       // e.g., "CID-99482"
+  full_name           String
+  aliases             String[]
+  dob                 String?       // e.g., "10/12/1990"
+  age                 Int?
+
+  // Physical Characteristics
+  sex                 String?
+  race                String?
+  height              String?       // e.g., "6'1\""
+  weight              String?       // e.g., "185 lbs"
+  hair_color          String?
+  eye_color           String?
+  scars_marks_tattoos String?       // SMT
+
+  // Status & Alerts
+  status              PersonStatus?
+  warrants            String[]      // e.g., ["Warrant: Washoe County - Aggravated Assault"]
+  caution_codes       String[]      // e.g., ["ARMED & DANGEROUS", "FLIGHT RISK"]
+
+  // Background & History
+  last_known_address  String?       // LKA
+  registered_vehicles String[]      // e.g., ["2022 Honda Civic (XYZ-1234)"]
+  occupation          String?
+  employer            String?
+  known_associates    String[]      // Array of names
+  criminal_history    Json?         // Use for the Rap Sheet array: [{ year: 2022, charge: "..." }]
+
+  // System & Game Data
+  mugshot_url         String?
+  dialogue_data       Json?
+
+  // Relations
+  case             Case             @relation(fields: [case_id], references: [id])
+  locations        Location[]
+  autopsy          Autopsy?
+  case_endings     CaseEnding[]
+  case_submissions CaseSubmission[]
+}
+model Autopsy {
+  id                   String  @id @default(uuid())
+  case_id              String
+  victim_person_id     String  @unique
+  coroner_name         String?
+  body_diagram_url     String?
+  estimated_tod_window String?
+  toxicology_raw       String?
+  stomach_contents     String?
+  anatomical_markers   Json?
+
+  // Relations
+  case                 Case                @relation(fields: [case_id], references: [id])
+  victim               Person              @relation(fields: [victim_person_id], references: [id])
+  player_autopsy_notes PlayerAutopsyNote[]
+}
+
+// ==========================================
+// DOMAIN D: PLAYER WORKSPACE & ENDINGS
+// ==========================================
+
+model PlayerCaseSession {
+  id                    String        @id @default(uuid())
+  user_id               String
+  group_id              String?
+  case_id               String
+  status                SessionStatus?
+  unlocked_location_ids String[]
+  started_at            DateTime      @default(now())
+
+  // Relations
+  user                 User                @relation(fields: [user_id], references: [id])
+  group                Group?              @relation(fields: [group_id], references: [id])
+  case                 Case                @relation(fields: [case_id], references: [id])
+  collected_evidences  CollectedEvidence[]
+  player_autopsy_notes PlayerAutopsyNote[]
+  case_submission      CaseSubmission?
+}
+
+model CollectedEvidence {
+  id          String   @id @default(uuid())
+  session_id  String
+  evidence_id String
+  player_note String?
+  added_at    DateTime @default(now())
+
+  // Relations
+  session  PlayerCaseSession @relation(fields: [session_id], references: [id])
+  evidence Evidence          @relation(fields: [evidence_id], references: [id])
+}
+
+model PlayerAutopsyNote {
+  id               String   @id @default(uuid())
+  session_id       String
+  autopsy_id       String
+  marker_id        String?
+  observation_note String?
+  updated_at       DateTime @default(now()) @updatedAt
+
+  // Relations
+  session PlayerCaseSession @relation(fields: [session_id], references: [id])
+  autopsy Autopsy           @relation(fields: [autopsy_id], references: [id])
+}
+
+model CaseEnding {
+  id                  String       @id @default(uuid())
+  case_id             String
+  accused_person_id   String
+  verdict_type        VerdictType?
+  min_proof_score_req Int?
+  ending_title        String?
+  epilogue_narrative  String?
+  base_points_awarded Int?
+  expected_keywords   String[]
+
+  // Relations
+  case             Case             @relation(fields: [case_id], references: [id])
+  accused_person   Person           @relation(fields: [accused_person_id], references: [id])
+  case_submissions CaseSubmission[]
+}
+
+model CaseSubmission {
+  id                      String   @id @default(uuid())
+  session_id              String   @unique
+  accused_person_id       String
+  supporting_evidence_ids String[]
+  explanation_text        String?
+  ending_triggered_id     String
+  points_earned           Int?
+  submitted_at            DateTime @default(now())
+
+  // Relations
+  session          PlayerCaseSession @relation(fields: [session_id], references: [id])
+  accused_person   Person            @relation(fields: [accused_person_id], references: [id])
+  ending_triggered CaseEnding        @relation(fields: [ending_triggered_id], references: [id])
+}
